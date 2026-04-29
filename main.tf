@@ -124,7 +124,6 @@ resource "aws_iam_instance_profile" "ssm_profile" {
   role = aws_iam_role.ssm_role.name
 }
 
-
 # S3 bucket
 resource "aws_s3_bucket" "s3" {
   bucket        = "demo-s3-marube23-bucket"
