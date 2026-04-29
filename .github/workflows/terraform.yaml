@@ -49,7 +49,8 @@ jobs:
     runs-on: ubuntu-latest
 
     outputs:
-      ec2_ip: ${{ steps.tf-ec2-ip.outputs.ec2_ip }}
+      instance_id: ${{ steps.tf-ec2.outputs.instance_id }}
+      s3_bucket: ${{ steps.tf-s3.outputs.s3_bucket }}
 
     env:
       AWS_REGION: ap-northeast-1
@@ -72,10 +73,15 @@ jobs:
       - run: terraform init
       - run: terraform apply -auto-approve
 
-      - name: Get EC2 IP
-        id: tf-ec2-ip
+      - name: Get instance ID
+        id: tf-ec2
         run: |
-          echo "ec2_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
+          echo "instance_id=$(terraform output -raw instance_id)" >> $GITHUB_OUTPUT
+
+      - name: Get S3 bucket
+        id: tf-s3
+        run: |
+          echo "s3_bucket=$(terraform output -raw s3_bucket)" >> $GITHUB_OUTPUT
 
   ansible-build:
     needs: terraform-apply  
@@ -84,7 +90,8 @@ jobs:
 
     env:
       AWS_REGION: ap-northeast-1
-      EC2_IP: ${{ needs.terraform-apply.outputs.ec2_ip }}
+      EC2_INSTANCE_ID: ${{ needs.terraform-apply.outputs.instance_id }}
+      S3_BUCKET: ${{ needs.terraform-apply.outputs.s3_bucket }}
 
     permissions:
       id-token: write
@@ -92,39 +99,40 @@ jobs:
 
     steps:    
       - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      # SSM に最適な ansible インストール
       - name: Install Ansible
         run: |
-          sudo apt update
-          sudo apt install -y ansible
-
-      - name: Debug SSH
+          pipx uninstall ansible-core || true
+          pipx install "ansible-core==2.16.6"
+      
+      # SSM 接続用 API & SDK インストール
+      - name: Install dependencies
         run: |
-          set -x
-          mkdir -p ~/.ssh
-          echo "HOME=$HOME"
-          ls -la ~
+          pipx inject ansible-core boto3 botocore
+          ansible-galaxy collection install amazon.aws
 
-      - name: Setup SSH
+      # SSM プラグインインストール
+      - name: Install session manager plugin
         run: |
-          mkdir -p ~/.ssh
-          printf "%s" "${{ secrets.AWS_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H $EC2_IP >> ~/.ssh/known_hosts
+          curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+          sudo dpkg -i session-manager-plugin.deb
 
-      - name: Wait for SSH
-        run: |
-          for i in {1..30}; do
-            nc -zv $EC2_IP 22 && exit 0
-            echo "waiting for ssh..."
-            sleep 10
-          done
-          exit 1
-
+      # 動的インベントリ取得
       - name: Create inventory
         run: |
           echo "[web]" > inventory
-          echo "$EC2_IP ansible_user=ec2-user ansible_ssh_private_key_file=~/.ssh/id_rsa" >> inventory
+          echo "$EC2_INSTANCE_ID ansible_connection=amazon.aws.aws_ssm ansible_aws_ssm_region=ap-northeast-1 ansible_aws_ssm_bucket_name=$S3_BUCKET" >> inventory
+
+      - name: Debug inventory
+        run: cat inventory
 
       - name: Run Ansible
+        env:
+          AWS_REGION: ap-northeast-1
         run: |
-          ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i inventory ansible/playbook.yaml
+          ansible-playbook -i inventory ansible/playbook.yaml -vvv

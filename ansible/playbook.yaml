@@ -1,5 +1,15 @@
 - hosts: web
   become: true
+
+  pre_tasks:
+    # SSM 接続まで待機
+    - name: Wait for SSM connection
+      wait_for_connection:
+        timeout: 300
+    
+    - name: Gather facts after connection
+      setup:
+
   tasks:
     - name: Install Ruby
       dnf:
