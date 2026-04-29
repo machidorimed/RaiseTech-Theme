@@ -68,14 +68,6 @@ resource "aws_security_group" "sg" {
   description = "Allow SSH"
   vpc_id      = aws_vpc.vpc.id
 
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # 本番では制限推奨
-  }
-
   egress {
     from_port   = 0
     to_port     = 0
@@ -90,18 +82,61 @@ resource "aws_security_group" "sg" {
 
 # EC2
 resource "aws_instance" "ec2" {
-  ami           = "ami-070d2b24928913a49" # Amazon Linux 2023 (東京リージョン例)
-  instance_type = "t3.micro"
-  subnet_id     = aws_subnet.public.id
-
+  ami                    = "ami-070d2b24928913a49" # Amazon Linux 2023 (東京リージョン例)
+  instance_type          = "t3.micro"
+  subnet_id              = aws_subnet.public.id
+  iam_instance_profile   = aws_iam_instance_profile.ssm_profile.name # セッションマネージャー用IAMロール
   vpc_security_group_ids = [aws_security_group.sg.id]
-  key_name               = "marube23" # 事前に作成しておく
 
   tags = {
     Name = "demo-ec2"
   }
 }
 
-output "ec2_public_ip" {
-  value = aws_instance.ec2.public_ip
+# Session Manager IAM Role
+resource "aws_iam_role" "ssm_role" {
+  name = "demo-ssm-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_attach" {
+  role       = aws_iam_role.ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_role_policy_attachment" "s3_fullaccess_attach" {
+  role       = aws_iam_role.ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+}
+
+resource "aws_iam_instance_profile" "ssm_profile" {
+  name = "demo-ssm-profile"
+  role = aws_iam_role.ssm_role.name
+}
+
+
+# S3 bucket
+resource "aws_s3_bucket" "s3" {
+  bucket        = "demo-s3-marube23-bucket"
+  force_destroy = true
+}
+
+
+
+output "instance_id" {
+  value = aws_instance.ec2.id
+}
+
+output "s3_bucket" {
+  value = aws_s3_bucket.s3.bucket
 }
